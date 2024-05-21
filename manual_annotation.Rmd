@@ -1,0 +1,163 @@
+---
+title: "Manual annotation"
+output: html_document
+date: "2023-11-20"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(Seurat)
+library(tidyverse)
+library(SingleR)
+```
+
+```{r}
+ds_00184_manual_ann <- readRDS(file = "/g/huber/users/lazoriak/ds_00184_control.rds")
+ds_00185_manual_ann <- readRDS(file="/g/huber/users/lazoriak/scripts/clustering_usp_new.rds")
+```
+
+```{r}
+marker_table <- data.frame(gene=c("betaTry", "epsilonTry", "alphaTry", 
+                             "nub", "Myo31DF",
+                             "esg", "N", "E(spl)mbeta-HLH", "klu",
+                             "Dl",
+                             "Vha100-4", "Vha16-1", "MtnC", "CG17109",
+                             "pros", "7B2", "IA-2", 
+                             "PGRP-SC1a", "PGRP-SC1b","Jon65Ai", "Jon65Aii",
+                             "lambdaTry", "LManVI", "iotaTry", "etaTry", "zetaTry", 
+                             "thetaTry", "Npc2f",
+                             "Smvt","ct"),
+                      celltype=c("aEC", "aEC", "aEC", 
+                                 "dEC", "dEC", 
+                                 "EB", "EB", "EB", "EB", 
+                                 "ISC",
+                                 "Copper\ncells", "Copper\ncells", "Copper\ncells", "Copper\ncells", 
+                                 "EE", "EE", "EE", 
+                                 "LFC", "LFC", "LFC", "LFC", "LFC",
+                                 "pEC","pEC","pEC","pEC",
+                                 "mEC", "mEC",
+                                 "MT","MT"))
+```
+
+```{r}
+Idents(ds_00184_manual_ann) <- factor(ds_00184_manual_ann$seurat_clusters, levels = as.character(0:26))
+source("/g/huber/users/philipp/decode/julia_2023/nick_helper_functions.R")
+p1<-marker_heatmap(seurat = ds_00184_manual_ann,
+               markers = marker_table$gene,
+               celltype = marker_table$celltype,
+               group.by = "seurat_clusters",
+               cap_value = 3)
+
+p1
+```
+
+
+```{r}
+Idents(ds_00185_manual_ann) <- factor(ds_00185_manual_ann$seurat_clusters, levels = as.character(0:26))
+source("/g/huber/users/philipp/decode/julia_2023/nick_helper_functions.R")
+p2<-marker_heatmap(seurat = ds_00185_manual_ann,
+               markers = marker_table$gene,
+               celltype = marker_table$celltype,
+               group.by = "seurat_clusters",
+               cap_value = 3)
+
+p2
+```
+
+```{r}
+ds_00185_manual_ann$celltype_manual <- case_when(
+  ds_00185_manual_ann$seurat_clusters %in% c(1,3,6) ~ "aEC",
+  ds_00185_manual_ann$seurat_clusters == 3 ~ "Copper",
+  ds_00185_manual_ann$seurat_clusters %in% c(1,4) ~ "dEC", #superhard to see
+  ds_00185_manual_ann$seurat_clusters %in% c(0, 2,5) ~ "EB",
+  ds_00185_manual_ann$seurat_clusters == 10 ~ "EE",
+  ds_00185_manual_ann$seurat_clusters %in% c(0,2) ~ "ISC",
+  ds_00185_manual_ann$seurat_clusters %in% c(4,8) ~ "LFC",
+  ds_00185_manual_ann$seurat_clusters ==3 ~ "mEC",
+  ds_00185_manual_ann$seurat_clusters == 9 ~ "MT",
+  ds_00185_manual_ann$seurat_clusters == 4 ~ "pEC",
+  ds_00185_manual_ann$seurat_clusters == 7 ~ "unk2", # ? unk1 is reserved for the unkown cells of the ctrl
+  T ~ ds_00185_manual_ann$seurat_clusters
+)
+```
+
+```{r}
+ds_00184_manual_ann$celltype_manual <- case_when(
+  ds_00184_manual_ann$seurat_clusters %in% c(2,3,5,7) ~ "aEC",
+  ds_00184_manual_ann$seurat_clusters %in% c(2,10) ~ "Copper",
+  ds_00184_manual_ann$seurat_clusters %in% c(0,1,2,8) ~ "dEC", #superhard to see
+  ds_00184_manual_ann$seurat_clusters %in% c(0, 1, 4, 6) ~ "EB",
+  ds_00184_manual_ann$seurat_clusters == 11 ~ "EE",
+  ds_00184_manual_ann$seurat_clusters %in% c(0,4) ~ "ISC",
+  ds_00184_manual_ann$seurat_clusters %in% c(2,8) ~ "LFC",
+  ds_00184_manual_ann$seurat_clusters %in% c(2,10) ~ "mEC",
+  ds_00184_manual_ann$seurat_clusters == 9 ~ "MT",
+  ds_00184_manual_ann$seurat_clusters == 8 ~ "pEC",
+  ds_00184_manual_ann$seurat_clusters == 12 ~ "unk2", # ? unk1 is reserved for the unkown cells of the ctrl
+  T ~ ds_00184_manual_ann$seurat_clusters
+)
+```
+
+```{r}
+DimPlot(ds_00184_manual_ann, reduction = "umap", label = TRUE, group.by="celltype_manual") 
+DimPlot(ds_00185_manual_ann, reduction = "umap", label = TRUE, group.by="celltype_manual")
+```
+#lets do integrated annotation
+```{r}
+ctrl_rep1 <- readRDS(file = "/g/huber/users/philipp/decode/data/DS-00151/analysis/DS-00151_filtered_srt_log_annot.rds")
+ctrl_rep2 <- readRDS(file = "/g/huber/users/philipp/decode/data/DS-00184/analysis/DS-00184_filtered_srt_log_annot.rds")
+usp_rep1 <- readRDS(file = "/g/huber/users/philipp/decode/data/DS-00157/analysis/DS-00157_filtered_srt_log_annot.rds")
+usp_rep2 <- readRDS(file = "/g/huber/users/philipp/decode/data/DS-00185/analysis/DS-00185_filtered_srt_log_annot.rds")
+```
+
+```{r}
+seurat_list <- list(ctrl_rep1$srt, ctrl_rep2$srt,usp_rep1$srt,usp_rep2$srt)
+# making a list of Seurat objects
+samples_list <- list(ds_00184_manual_ann, ds_00185_manual_ann)
+# normalizing and identifying variable features for each dataset independently
+samples_list <- lapply(X = samples_list, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+})
+
+# selecting features that are repeatedly variable across datasets for integration
+features <- SelectIntegrationFeatures(object.list = samples_list)
+
+# integration
+anchors_new <- FindIntegrationAnchors(object.list = samples_list, anchor.features = features)
+
+# this command creates an 'integrated' data assay
+usp_ctrl_manual_combined <- IntegrateData(anchorset = anchors_new)
+DefaultAssay(usp_ctrl_manual_combined) <- "integrated"
+
+usp_ctrl_manual_combined <- ScaleData(usp_ctrl_manual_combined, verbose = FALSE)
+usp_ctrl_manual_combined <- RunPCA(usp_ctrl_manual_combined, npcs = 30, verbose = FALSE)
+usp_ctrl_manual_combined <- RunUMAP(usp_ctrl_manual_combined, reduction = "pca", dims = 1:30)
+usp_ctrl_manual_combined <- FindNeighbors(usp_ctrl_manual_combined, reduction = "pca", dims = 1:30)
+usp_ctrl_manual_combined <- FindClusters(usp_ctrl_manual_combined, resolution = 0.5)
+```
+```{r}
+p1 <- DimPlot(usp_ctrl_manual_combined, reduction = "umap", group.by = "orig.ident") #ident or?
+p2 <- DimPlot(usp_ctrl_manual_combined, reduction = "umap", label = TRUE, repel = TRUE)
+p1
+p2
+```
+
+```{r}
+DimPlot(usp_ctrl_manual_combined, reduction = "umap", split.by = "orig.ident")
+```
+
+```{r}
+DimPlot(usp_ctrl_manual_combined, 
+        reduction = "umap", 
+        split.by = "orig.ident", 
+        group.by = "celltype_manual") +
+  theme(legend.text = element_text(size = 8))
+```
+```{r}
+saveRDS(usp_ctrl_manual_combined, file="/g/huber/users/lazoriak/scripts/usp_ctrl_manual_combined.rds")
+```
+

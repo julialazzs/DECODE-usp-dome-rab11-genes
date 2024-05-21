@@ -1,0 +1,230 @@
+---
+title: "annotation_flybase_ctrl"
+output: html_document
+date: "2023-11-02"
+editor_options: 
+  chunk_output_type: inline
+---
+
+# Introduction
+This is some code based on what Nick Hirschmüller did to annotate his data with information from the fly cell atlas and to annotate manually using marker gene information. 
+Some of this we will be able to
+
+```{r, message=FALSE}
+library(Seurat)
+library(tidyverse)
+library(SingleR)
+library(patchwork)
+library(circlize)
+library(ComplexHeatmap)
+library(qs)
+set.seed(7)
+```
+
+```{r load data}
+# loading the seurat object, for example from control
+
+ds_00184_flybase <- readRDS(file = "/g/huber/users/lazoriak/ds_00184_control.rds")
+ds_00185_flybase <- readRDS(file = "/g/huber/users/lazoriak/scripts/clustering_usp_new.rds")
+ds_00186_flybase <- readRDS(file="/g/huber/users/lazoriak/scripts/clustering_dome.rds")
+ds_00187_flybase <- readRDS(file="/g/huber/users/lazoriak/scripts/rab11/clustering_rab11.rds")
+
+# loading the flycell_gut data:
+
+flycell_gut <- qs::qread("/g/huber/users/hirschmueller/DECODE/raw_data/flycellatlas/gut_stringent/flycellatlas_gut_sce.qs")
+```
+
+```{r annotate, eval=FALSE}
+# using singleR to do the annotation
+# make sure this is accurate to your data and then you will have to run this on the cluster / not in Rstudio
+
+labels <- SingleR::SingleR(test=ds_00184@assays$RNA@counts,
+                  ref =SingleCellExperiment::counts(flycell_gut),
+                  labels = flycell_gut$annotation,
+                  de.method="wilcox",
+                  BPPARAM=MulticoreParam(16))
+```
+
+```{r}
+# load the annotaiton after you're done on the cluster
+# add the labels to your seurat object similarly as you did before
+
+labels <- readRDS(file = "/g/huber/users/lazoriak/scripts/integration/annotation_results/labels.rds")
+labels_usp <- readRDS(file="/g/huber/users/lazoriak/scripts/integration/annotation_results/labels_usp.rds")
+labels_dome <- readRDS(file="/g/huber/users/lazoriak/scripts/integration/annotation_results/labels_dome.rds")
+labels_rab11 <- readRDS(file="/g/huber/users/lazoriak/scripts/integration/annotation_results/labels_rab11.rds")
+```
+
+```{r}
+# use new names, as to not overwrite the other annotations, so we can compare them
+# maybe use ds_00184@meta.data$flyatlas_label & use labels$labels and labels$pruned.labels
+
+ds_00184_flybase@meta.data$flyatlas_label <- labels$labels
+ds_00184_flybase@meta.data$flyatlas_label_pruned <- labels$pruned.labels
+
+ds_00185_flybase@meta.data$flyatlas_label <- labels_usp$labels
+ds_00185_flybase@meta.data$flyatlas_label_pruned <- labels_usp$pruned.labels
+
+ds_00186_flybase@meta.data$flyatlas_label <- labels_dome$labels
+ds_00186_flybase@meta.data$flyatlas_label_pruned <- labels_dome$pruned.labels
+
+ds_00187_flybase@meta.data$flyatlas_label <- labels_rab11$labels
+ds_00187_flybase@meta.data$flyatlas_label_pruned <- labels_rab11$pruned.labels
+```
+
+```{r}
+DimPlot(ds_00184_flybase, reduction = "umap", group.by="flyatlas_label", label=FALSE) +
+  theme(legend.text = element_text(size = 8))
+```
+
+# Integrating usp perturbation annotation results with the control data
+
+```{r}
+# making a list of Seurat objects
+samples_list <- list(ds_00184_flybase, ds_00185_flybase)
+# normalizing and identifying variable features for each dataset independently
+samples_list <- lapply(X = samples_list, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+})
+
+# selecting features that are repeatedly variable across datasets for integration
+features <- SelectIntegrationFeatures(object.list = samples_list)
+
+# integration
+anchors_new <- FindIntegrationAnchors(object.list = samples_list, anchor.features = features)
+
+# this command creates an 'integrated' data assay
+usp_assay_combined <- IntegrateData(anchorset = anchors_new)
+DefaultAssay(usp_assay_combined) <- "integrated"
+
+usp_assay_combined <- ScaleData(usp_assay_combined, verbose = FALSE)
+usp_assay_combined <- RunPCA(usp_assay_combined, npcs = 30, verbose = FALSE)
+usp_assay_combined <- RunUMAP(usp_assay_combined, reduction = "pca", dims = 1:30)
+usp_assay_combined <- FindNeighbors(usp_assay_combined, reduction = "pca", dims = 1:30)
+usp_assay_combined <- FindClusters(usp_assay_combined, resolution = 0.5)
+```
+
+```{r}
+# visualize these annotations and compare to previous annotations... how are they different?
+# here it would be useful to plot multiple UMAPs at once, one with each annotation
+# we can do this together also
+p1 <- DimPlot(usp_assay_combined, reduction = "umap", group.by = "orig.ident") #ident or?
+p2 <- DimPlot(usp_assay_combined, reduction = "umap", label = TRUE, repel = TRUE)
+p1
+p2
+```
+
+```{r}
+DimPlot(usp_assay_combined, reduction = "umap", split.by = "orig.ident")
+```
+```{r}
+
+# the column "labels_combined" now has all the label information from labels and labels.x
+# you should now be able to use that column to color your DimPlot by cell type, probably with the parameter "group.by="
+DimPlot(usp_assay_combined, 
+        reduction = "umap", 
+        split.by = "orig.ident", 
+        group.by = "flyatlas_label") +
+  theme(legend.text = element_text(size = 8))
+```
+# Integrating dome perturbation annotation results with the control data
+
+```{r}
+# making a list of Seurat objects
+samples_list <- list(ds_00184_flybase, ds_00186_flybase)
+# normalizing and identifying variable features for each dataset independently
+samples_list <- lapply(X = samples_list, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+})
+
+# selecting features that are repeatedly variable across datasets for integration
+features <- SelectIntegrationFeatures(object.list = samples_list)
+
+# integration
+anchors_new <- FindIntegrationAnchors(object.list = samples_list, anchor.features = features)
+
+# this command creates an 'integrated' data assay
+dome_assay_combined <- IntegrateData(anchorset = anchors_new)
+DefaultAssay(dome_assay_combined) <- "integrated"
+
+dome_assay_combined <- ScaleData(dome_assay_combined, verbose = FALSE)
+dome_assay_combined <- RunPCA(dome_assay_combined, npcs = 30, verbose = FALSE)
+dome_assay_combined <- RunUMAP(dome_assay_combined, reduction = "pca", dims = 1:30)
+dome_assay_combined <- FindNeighbors(dome_assay_combined, reduction = "pca", dims = 1:30)
+dome_assay_combined <- FindClusters(dome_assay_combined, resolution = 0.5)
+```
+
+```{r}
+# visualize these annotations and compare to previous annotations... how are they different?
+# here it would be useful to plot multiple UMAPs at once, one with each annotation
+# we can do this together also
+p1 <- DimPlot(dome_assay_combined, reduction = "umap", group.by = "orig.ident") #ident or?
+p2 <- DimPlot(dome_assay_combined, reduction = "umap", label = TRUE, repel = TRUE)
+p1
+p2
+```
+
+```{r}
+DimPlot(dome_assay_combined, reduction = "umap", split.by = "orig.ident")
+```
+```{r}
+DimPlot(dome_assay_combined, reduction = "umap", split.by = "orig.ident", group.by="flyatlas_label")+
+  theme(legend.text = element_text(size = 8))
+```
+
+# Integrating rab11 perturbation annotation results with the control data
+
+```{r}
+# making a list of Seurat objects
+samples_list <- list(ds_00184_flybase, ds_00187_flybase)
+# normalizing and identifying variable features for each dataset independently
+samples_list <- lapply(X = samples_list, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+})
+
+# selecting features that are repeatedly variable across datasets for integration
+features <- SelectIntegrationFeatures(object.list = samples_list)
+
+# integration
+anchors_new <- FindIntegrationAnchors(object.list = samples_list, anchor.features = features)
+
+# this command creates an 'integrated' data assay
+rab11_assay_combined <- IntegrateData(anchorset = anchors_new)
+DefaultAssay(rab11_assay_combined) <- "integrated"
+
+rab11_assay_combined <- ScaleData(rab11_assay_combined, verbose = FALSE)
+rab11_assay_combined <- RunPCA(rab11_assay_combined, npcs = 30, verbose = FALSE)
+rab11_assay_combined <- RunUMAP(rab11_assay_combined, reduction = "pca", dims = 1:30)
+rab11_assay_combined <- FindNeighbors(rab11_assay_combined, reduction = "pca", dims = 1:30)
+rab11_assay_combined <- FindClusters(rab11_assay_combined, resolution = 0.5)
+```
+
+
+```{r}
+# visualize these annotations and compare to previous annotations... how are they different?
+# here it would be useful to plot multiple UMAPs at once, one with each annotation
+# we can do this together also
+p1 <- DimPlot(rab11_assay_combined, reduction = "umap", group.by = "orig.ident") #ident or?
+p2 <- DimPlot(rab11_assay_combined, reduction = "umap", label = TRUE, repel = TRUE)
+p1
+p2
+```
+
+```{r}
+DimPlot(rab11_assay_combined, reduction = "umap", split.by = "orig.ident")
+```
+
+```{r}
+DimPlot(rab11_assay_combined, reduction = "umap", split.by = "orig.ident", group.by="flyatlas_label")+
+  theme(legend.text = element_text(size = 8))
+```
+
+```{r}
+# save annotated data
+saveRDS (usp_assay_combined, file="/g/huber/users/lazoriak/scripts/integration/annotation_results/ctrl_usp_annotation_combined.rds")
+saveRDS (dome_assay_combined, file="/g/huber/users/lazoriak/scripts/integration/annotation_results/ctrl_dome_annotation_combined.rds")
+saveRDS (rab11_assay_combined, file="/g/huber/users/lazoriak/scripts/integration/annotation_results/ctrl_rab11_annotation_combined.rds")
+```

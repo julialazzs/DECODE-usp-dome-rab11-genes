@@ -1,0 +1,201 @@
+---
+title: "integrated_perturbated_samples_and_control"
+output: html_document
+date: "2023-11-02"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#downloading all libraries and data we will need :)
+library(Seurat)
+library(SeuratData) #to install: devtools::install_github("satijalab/seurat-data", ref = 'develop')
+library(patchwork)
+
+#control sample
+ds_00184.data <- Read10X(data.dir = "/g/huber/users/philipp/decode/data/DS-00184/counts/outs/filtered_feature_bc_matrix/")
+ds_00184 <- CreateSeuratObject(counts = ds_00184.data, project = "decode_ctrl", min.cells = 3, min.features = 200)
+
+#usp
+ds_00185.data <- Read10X(data.dir = "/g/huber/users/philipp/decode/data/DS-00185/counts/outs/filtered_feature_bc_matrix/")
+ds_00185 <- CreateSeuratObject(counts = ds_00185.data, project = "decode_usp", min.cells = 3, min.features = 200)
+
+#dome
+ds_00186.data <- Read10X(data.dir = "/g/huber/users/philipp/decode/data/DS-00186/counts/outs/filtered_feature_bc_matrix/")
+ds_00186 <- CreateSeuratObject(counts = ds_00186.data, project = "decode_dome", min.cells = 3, min.features = 200)
+
+#rab11
+ds_00187.data <- Read10X(data.dir = "/g/huber/users/philipp/decode/data/DS-00187/counts/outs/filtered_feature_bc_matrix/")
+ds_00187 <- CreateSeuratObject(counts = ds_00187.data, project = "decode_rab11", min.cells = 3, min.features = 200)
+```
+
+# Integrating usp perturbation samples with the control data
+
+## Setting up the Seurat objects
+
+```{r}
+# making a list of Seurat objects for downstream analysis
+seurat_object_list <- list(ds_00184, ds_00185)
+
+# normalizing and identifying variable features for each dataset independently
+seurat_object_list <- lapply(X = seurat_object_list, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+})
+
+# selecting features that are repeatedly variable across datasets for integration
+features <- SelectIntegrationFeatures(object.list = seurat_object_list)
+```
+
+## Performing integration
+
+```{r}
+# integration
+anchors <- FindIntegrationAnchors(object.list = seurat_object_list, anchor.features = features)
+
+# this command creates an 'integrated' data assay (why?)
+ctrl_usp_assay_combined <- IntegrateData(anchorset = anchors)
+```
+
+## Performing an integrated analysis
+
+```{r}
+# specifying that we will perform downstream analysis on the corrected data, note that the
+# original unmodified data still resides in the 'RNA' assay
+DefaultAssay(ctrl_usp_assay_combined) <- "integrated"
+
+# Running the standard workflow for visualization and clustering
+ctrl_usp_assay_combined <- ScaleData(ctrl_usp_assay_combined, verbose = FALSE)
+ctrl_usp_assay_combined <- RunPCA(ctrl_usp_assay_combined, npcs = 30, verbose = FALSE)
+ctrl_usp_assay_combined <- RunUMAP(ctrl_usp_assay_combined, reduction = "pca", dims = 1:30)
+ctrl_usp_assay_combined <- FindNeighbors(ctrl_usp_assay_combined, reduction = "pca", dims = 1:30)
+ctrl_usp_assay_combined <- FindClusters(ctrl_usp_assay_combined, resolution = 0.5)
+
+# Visualization
+p1 <- DimPlot(ctrl_usp_assay_combined, reduction = "umap", group.by = "orig.ident") #ident or?
+p2 <- DimPlot(ctrl_usp_assay_combined, reduction = "umap", label = TRUE, repel = TRUE)
+p1 + p2
+```
+```{r}
+DimPlot(ctrl_usp_assay_combined, reduction = "umap", label=TRUE, split.by = "orig.ident")
+# To visualize the two conditions side-by-side, we can use the split.by argument to show each condition colored by cluster. (why do we need it?)
+```
+```{r}
+#saving the integrated data
+saveRDS (ctrl_usp_assay_combined, file="/g/huber/users/lazoriak/scripts/integration/ctrl_usp_assay_combined.rds")
+```
+
+# Integrating dome perturbation samples with the control data
+
+## Setting up the Seurat objects
+
+```{r}
+# making a list of Seurat objects for downstream analysis
+seurat_object_list_2 <- list(ds_00184, ds_00186)
+
+# normalizing and identifying variable features for each dataset independently
+seurat_object_list_2 <- lapply(X = seurat_object_list_2, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+})
+
+# selecting features that are repeatedly variable across datasets for integration
+features <- SelectIntegrationFeatures(object.list = seurat_object_list_2)
+```
+
+## Performing integration
+
+```{r}
+# integration
+anchors <- FindIntegrationAnchors(object.list = seurat_object_list_2, anchor.features = features)
+
+# this command creates an 'integrated' data assay (why?)
+ctrl_dome_assay_combined <- IntegrateData(anchorset = anchors)
+```
+
+## Performing an integrated analysis
+
+```{r}
+# specifying that we will perform downstream analysis on the corrected data, note that the
+# original unmodified data still resides in the 'RNA' assay
+DefaultAssay(ctrl_dome_assay_combined) <- "integrated"
+
+# Running the standard workflow for visualization and clustering
+ctrl_dome_assay_combined <- ScaleData(ctrl_dome_assay_combined, verbose = FALSE)
+ctrl_dome_assay_combined <- RunPCA(ctrl_dome_assay_combined, npcs = 30, verbose = FALSE)
+ctrl_dome_assay_combined <- RunUMAP(ctrl_dome_assay_combined, reduction = "pca", dims = 1:30)
+ctrl_dome_assay_combined <- FindNeighbors(ctrl_dome_assay_combined, reduction = "pca", dims = 1:30)
+ctrl_dome_assay_combined <- FindClusters(ctrl_dome_assay_combined, resolution = 0.5)
+
+# Visualization
+p1 <- DimPlot(ctrl_dome_assay_combined, reduction = "umap", group.by = "orig.ident") #ident or?
+p2 <- DimPlot(ctrl_dome_assay_combined, reduction = "umap", label = TRUE, repel = TRUE)
+p1 
+p2
+```
+```{r}
+DimPlot(ctrl_dome_assay_combined, reduction = "umap", split.by = "orig.ident")
+# To visualize the two conditions side-by-side, we can use the split.by argument to show each condition colored by cluster. (why do we need it?)
+```
+```{r}
+#saving the integrated data
+saveRDS (ctrl_dome_assay_combined, file="/g/huber/users/lazoriak/scripts/integration/ctrl_dome_assay_combined.rds")
+```
+
+# Integrating rab11 perturbation samples with the control data
+
+## Setting up the Seurat objects
+
+```{r}
+# making a list of Seurat objects for downstream analysis
+seurat_object_list_3 <- list(ds_00184, ds_00187)
+
+# normalizing and identifying variable features for each dataset independently
+seurat_object_list_3 <- lapply(X = seurat_object_list_3, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+})
+
+# selecting features that are repeatedly variable across datasets for integration
+features <- SelectIntegrationFeatures(object.list = seurat_object_list_3)
+```
+
+## Performing integration
+
+```{r}
+# integration
+anchors <- FindIntegrationAnchors(object.list = seurat_object_list_3, anchor.features = features)
+
+# this command creates an 'integrated' data assay (why?)
+ctrl_rab11_assay_combined <- IntegrateData(anchorset = anchors)
+```
+
+## Performing an integrated analysis
+
+```{r}
+# specifying that we will perform downstream analysis on the corrected data, note that the
+# original unmodified data still resides in the 'RNA' assay
+DefaultAssay(ctrl_rab11_assay_combined) <- "integrated"
+
+# Running the standard workflow for visualization and clustering
+ctrl_rab11_assay_combined <- ScaleData(ctrl_rab11_assay_combined, verbose = FALSE)
+ctrl_rab11_assay_combined <- RunPCA(ctrl_rab11_assay_combined, npcs = 30, verbose = FALSE)
+ctrl_rab11_assay_combined <- RunUMAP(ctrl_rab11_assay_combined, reduction = "pca", dims = 1:30)
+ctrl_rab11_assay_combined <- FindNeighbors(ctrl_rab11_assay_combined, reduction = "pca", dims = 1:30)
+ctrl_rab11_assay_combined <- FindClusters(ctrl_rab11_assay_combined, resolution = 0.5)
+
+# Visualization
+p1 <- DimPlot(ctrl_rab11_assay_combined, reduction = "umap", group.by = "orig.ident") #ident or?
+p2 <- DimPlot(ctrl_rab11_assay_combined, reduction = "umap", label = TRUE, repel = TRUE)
+p1 + p2
+```
+```{r}
+DimPlot(ctrl_rab11_assay_combined, reduction = "umap", split.by = "orig.ident")
+# To visualize the two conditions side-by-side, we can use the split.by argument to show each condition colored by cluster. (why do we need it?)
+```
+```{r}
+#saving the integrated data
+saveRDS (ctrl_rab11_assay_combined, file="/g/huber/users/lazoriak/scripts/integration/ctrl_rab11_assay_combined.rds")
+```

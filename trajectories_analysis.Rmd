@@ -1,0 +1,187 @@
+---
+title: "trajectory inference"
+output: html_document
+date: "2024-03-12"
+---
+
+
+## Trajectory inference
+
+* what is it and why? -> maybe this paper is helpful: https://www.nature.com/articles/s41467-020-14766-3
+* many different packages for this, we start with slingshot
+* slingshot paper: https://bmcgenomics.biomedcentral.com/articles/10.1186/s12864-018-4772-0
+* slingshot tutorial / manual: https://bioconductor.org/packages/devel/bioc/vignettes/slingshot/inst/doc/vignette.html 
+* condiments is slingshot for multiple conditions
+* condiments paper: https://www.biorxiv.org/content/10.1101/2021.03.09.433671v1.full
+* condiments tutorial / manual: https://www.bioconductor.org/packages/release/bioc/vignettes/condiments/inst/doc/condiments.html
+
+* tradeSeq is for differentially expressed genes in trajectory analysis (there is info on tradeSeq in the slingshot manual)
+
+* this would be conducted on data annotated with cell types
+
+```{r}
+library(condiments)
+```
+
+```{r}
+slingshot_res_nick <- readRDS("/g/huber/users/hirschmueller/DECODE/NotchPaper/code/scNotch_profiling/output/slingshot_object.rds")
+top_nick <- topologyTest(SlingshotDataSet(slingshot_res_nick), 
+                                    slingshot_res_nick$perturbation, 
+                                    rep = 50,
+                                    methods = "KS_mean", 
+                                    threshs = .01,
+                                    parallel = TRUE,
+                                    BPPARAM = BiocParallel::MulticoreParam(workers = 50))
+```
+
+```{r setup, include=FALSE}
+ # load your annotated integrated rds here
+ctrl_combined <- merge(ctrl_rep1$srt, y=ctrl_rep2$srt, add.cell.ids = c("ctrl_1", "ctrl_2"))
+
+# combine "treatment"
+usp_combined <- merge(usp_rep1$srt, y=usp_rep2$srt, add.cell.ids = c("usp_1","usp_2"))
+
+# combine all
+usp_ctrl <- merge(ctrl_combined, y=usp_combined)
+usp_ctrl@meta.data$sample_id <- factor(usp_ctrl@meta.data$orig.ident)
+usp_ctrl@meta.data$group_id <- case_when(
+  usp_ctrl@meta.data$sample_id %in% c("DS-00151", "DS-00184") ~ "ctrl",
+  usp_ctrl@meta.data$sample_id %in% c("DS-00157", "DS-00185") ~ "usp",
+                                      ) 
+usp_ctrl$group_id <- factor(usp_ctrl$group_id)
+saveRDS(usp_ctrl, file="/g/huber/users/lazoriak/scripts/trajectories/usp_ctrl.rds")
+```
+
+```{r analysis before slingshot}
+# slingshot requires filtering, normalization, dimensionality reduction and clustering
+# which we have all done before
+
+# MAYBE: reducing the number of cell types (likely already done)
+# MAYBE: reintegration if number of cell types changed
+```
+
+```{r convert to sce}
+# convert seurat object to sce
+sce <- as.SingleCellExperiment(usp_ctrl)
+```
+
+```{r}
+sce <- scater::logNormCounts(sce)
+hvg <- order(MatrixGenerics::rowVars(logcounts(sce)), decreasing = TRUE)
+sce <- sce[hvg[1:500], ]
+sce <- scater::runPCA(sce, ncomponents = 50)
+sce <- scater::runUMAP(sce, dimred = "PCA")
+saveRDS(sce, file="/g/huber/users/lazoriak/scripts/trajectories/sce_before_slingshot.rds")
+```
+
+```{r use slingshot}
+# might have to define starting and ending cell types (starting celltype would be the stem cells)
+
+sce <- slingshot(sce, clusterLabels = 'predicted.celltype', reducedDim = 'PCA')
+
+# this will be fitting one trajectory for both ctrl and perturbation
+
+saveRDS(sce, file="/g/huber/users/lazoriak/scripts/trajectories/sce_after_slingshot.rds")
+```
+
+```{r visualise outcome}
+# if need be, reload slingshot results
+#sce <- readRDS(file="/g/huber/users/lazoriak/scripts/trajectories/sce_after_slingshot.rds")
+# visualise the outcome
+summary(sce$slingPseudotime_1)
+library(raster)
+library(rgdal)
+library(classInt)
+library(RColorBrewer)
+library(grDevices)
+```
+
+```{r visualise outcome}
+colors <- colorRampPalette(brewer.pal(11,'Spectral')[-6])(100)
+plotcol <- colors[cut(sce$slingPseudotime_1, breaks=100)]
+plot(reducedDims(sce)$PCA, col = plotcol, pch=16, asp = 1)
+lines(SlingshotDataSet(sce), lwd=2, col='black')
+```
+
+```{r visualise outcome}
+plot(reducedDims(sce)$PCA, col = brewer.pal(9,'Set1')[sce$GMM], pch=16, asp = 1)
+lines(SlingshotDataSet(sce), lwd=2, type = 'lineages', col = 'black')
+```
+
+
+
+```{r}
+# we might have to adjust the fit or fit two different trajectories
+```
+
+```{r}
+# now we can test for differentially expressed genes throughout the trajectories
+# for that we need to use tradeSeq
+library(tradeSeq)
+
+# fit negative binomial GAM
+sce <- fitGAM(sce)
+
+# test for dynamic expression
+ATres <- associationTest(sce)
+```
+
+```{r}
+saveRDS(sce, file="/g/huber/users/lazoriak/scripts/trajectories/sce_after_fitGAM.rds")
+topgenes <- rownames(ATres[order(ATres$pvalue), ])[1:250]
+pst.ord <- order(sce$slingPseudotime_1, na.last = NA)
+heatdata <- assays(sce)$counts[topgenes, pst.ord]
+heatclus <- sce$predicted.celltype[pst.ord]
+
+heatmap(as.matrix(log1p(heatdata)), Colv = NA,
+        ColSideColors = brewer.pal(9,"Set1")[heatclus])
+```
+
+```{r}
+# take a look at the genes that come out of this analysis
+# can be tested with enrichr
+# or compared to the previous analyses
+```
+
+```{r}
+# Authors of condiments/slingshot prefer fitting a common trajectory if the differences
+# between the conditions is small enough!
+# here we check if this is the case for our data
+slingshot_res <- readRDS(file="/g/huber/users/lazoriak/scripts/trajectories/sce_after_slingshot.rds")
+
+scores <- condiments::imbalance_score(
+  Object = reducedDim(sce,"PCA")[,1:2] %>% as.matrix(),
+  conditions = sce$group_id,
+  k = 40, smooth = 30)
+
+sce$scores <- scores$scaled_scores
+imbalence_df<-data.frame(reducedDim(sce,"PCA")[,1:2])
+imbalence_df$scores <- scores$scaled_scores
+
+# we can see, that there are areas of great imbalence. Which is expected given we see different celltype abundance.
+ggplot(imbalence_df, aes(x = PC1, y = PC2, col = scores)) +
+  geom_point(size = .7) +
+  scale_color_viridis_c(option = "C") +
+  labs(col = "Scores")
+
+# essentially, the labels get permutated and the trajectories are refit.
+# pseudotime vector is generated and the distribution is compared with the "true" one
+# if the results do not change significantly, we can fit the same trajectory for both conditions.
+
+# This result suggests we should fit seperat trajetories for the conditions
+topologyTest_result <- topologyTest(PseudotimeOrdering(slingshot_res), 
+                                    slingshot_res$group_id, 
+                                    rep = 120,
+                                    methods = "KS_mean",
+                                    threshs = .01,
+                                    parallel = TRUE,
+                                    BPPARAM = BiocParallel::MulticoreParam(workers = 50))
+topologyTest_result <- readRDS(file="/g/huber/users/lazoriak/scripts/trajectories/topologyTest_result.rds")
+
+# refit slingshot
+slingshot_individual <- slingshot_conditions(slingshot_res,
+                                             slingshot_res$group_id,
+                                             approx_points = 150)
+```
+
+
