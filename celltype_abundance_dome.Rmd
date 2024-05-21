@@ -1,0 +1,123 @@
+---
+title: "Untitled"
+output: html_document
+date: "2024-05-05"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(DESeq2)
+library(ggplot2)
+library(ggsignif)
+```
+
+```{r}
+dome_ctrl <- readRDS(file="/g/huber/users/lazoriak/scripts/dome/dome analysis/dome_ctrl.rds")
+```
+
+```{r}
+dome_ctrl$predicted.celltype <- case_when (
+  dome_ctrl$predicted.celltype %in% c("aEC", "aEC-like", "copper cells", "pEC", "LFC", "LFC/pEC") ~ "EC",
+  TRUE ~ as.character(dome_ctrl$predicted.celltype))
+
+dome_ctrl@meta.data$tmp_celltype <- case_when(
+  # we are only interested in differentiated celltypes and progenitor cell types. No intermediate celltypes
+  dome_ctrl$predicted.celltype%in% c("dEC", "unk1", "unk3") ~ NA_character_, 
+  T ~ dome_ctrl$predicted.celltype
+  )
+```
+
+```{r}
+dome_ctrl@meta.data$orig.ident <- case_when(
+  dome_ctrl$orig.ident == "DS-00178" ~ "Control Replicate 1",
+  dome_ctrl$orig.ident == "DS-00184"~ "Control Replicate 2",
+  dome_ctrl$orig.ident == "DS-0017A"~ "Dome Replicate 1",
+  dome_ctrl$orig.ident == "DS-00186"~ "Dome Replicate 2",
+) %>% factor(., levels = c("Control Replicate 1", "Control Replicate 2",
+                           "Dome Replicate 1","Dome Replicate 2"))
+```
+
+```{r}
+dome_ctrl_subset <- dome_ctrl[,!is.na(dome_ctrl$tmp_celltype)]
+```
+
+```{r}
+cnts <- dome_ctrl_subset@meta.data %>% 
+  group_by(orig.ident, predicted.celltype) %>% 
+  # this counts cells per celltype
+  tally() %>% 
+  pivot_wider(., names_from = "orig.ident",
+              values_from = "n") %>% 
+  column_to_rownames("predicted.celltype") %>% 
+  as.matrix()
+
+# define model matrix
+exp_design <- dome_ctrl_subset@meta.data[,c("orig.ident", "group_id")] %>%
+  data.frame() %>%
+  distinct()
+
+exp_design$orig.ident <- factor(exp_design$orig.ident, levels=c("Control Replicate 1", "Control Replicate 2",
+                           "Dome Replicate 1","Dome Replicate 2"))
+
+rownames(exp_design) <- exp_design$orig.ident
+
+model <- model.matrix(~ group_id, data = exp_design)
+
+
+dds <- DESeqDataSetFromMatrix(countData = cnts,
+                              colData = exp_design,
+                              design = ~group_id)
+
+sizeFactors(dds) = colSums(cnts)/mean(colSums(cnts))
+
+# run DESeq2. 
+result <- DESeq(dds, fitType='local') # only 4 "genes" so dont fit smooth trend line of dispersion ~ mean
+out_deseq <- results(result) %>% 
+  data.frame() %>% 
+  arrange(padj)
+out_deseq
+```
+
+```{r}
+plot_df  <- counts(dds, norm=T) %>% 
+  data.frame() %>% 
+  rownames_to_column("predicted.celltype") %>% 
+  pivot_longer(-predicted.celltype,names_to = "replicate", values_to = "n_cells") %>% 
+  mutate(celltype=factor(predicted.celltype, levels=c("EE","ISC/EB","EC"))) %>% 
+  mutate(replicate = str_replace_all(.$replicate,"\\."," ")) %>% 
+  mutate(replicate=factor(replicate, levels=c("Control Replicate 1","Control Replicate 2","Dome Replicate 1","Dome Replicate 2"))) %>%
+  mutate(Condition = ifelse(grepl("Dome",replicate), "Dome\nknockout","Control")) 
+plot_df
+```
+```{r}
+annotation_df <- data.frame(
+  celltype = c("EE","ISC/EB","EC"),
+  start = c("Control"), 
+  end = c("Dome\nknockout"),
+  y = c(200, 3000, 2000),
+  label = c("n.s.", "n.s.", "n.s.")
+)
+annotation_df$celltype <- factor(annotation_df$celltype , levels=c("EE","ISC/EB","EC"))
+```
+
+```{r}
+p <- ggplot(plot_df, aes(x=Condition, y=n_cells,color=replicate))+
+  geom_point(size=1.5)+
+  geom_blank(mapping=aes(x=Condition, y=n_cells,color=replicate)) +
+  geom_signif(
+    data = annotation_df,
+    mapping=aes(xmin = start, xmax = end, annotations = label, y_position = y, tip_length=0),
+    textsize = 4.3, vjust = 0.0, 
+    manual = TRUE,
+    inherit.aes = FALSE
+  )+
+  stat_summary(fun="mean", geom="crossbar",
+                 mapping=aes(ymin=..y.., ymax=..y..), width=0.2,
+                 position=position_dodge(),show.legend = FALSE, color="red")+
+  facet_wrap(~celltype, scales = "free_y", ncol = 4) + 
+  ylab("Normalized\nnumber of cells")
+p
+```

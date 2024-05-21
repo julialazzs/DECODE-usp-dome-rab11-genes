@@ -1,0 +1,128 @@
+---
+title: "Untitled"
+output: html_document
+date: "2024-05-05"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(DESeq2)
+library(ggplot2)
+library(ggsignif)
+```
+
+```{r}
+rab11_ctrl <- readRDS(file="/g/huber/users/lazoriak/scripts/rab11/rab11 analysis/rab11_ctrl.rds")
+```
+
+```{r}
+rab11_ctrl$predicted.celltype <- case_when (
+  rab11_ctrl$predicted.celltype %in% c("aEC", "aEC-like", "copper cells", "pEC", "LFC", "LFC/pEC") ~ "EC",
+  TRUE ~ as.character(rab11_ctrl$predicted.celltype))
+
+rab11_ctrl@meta.data$tmp_celltype <- case_when(
+  # we are only interested in differentiated celltypes and progenitor cell types. No intermediate celltypes
+  rab11_ctrl$predicted.celltype%in% c("dEC", "unk1", "unk2", "unk3") ~ NA_character_, 
+  T ~ rab11_ctrl$predicted.celltype
+  )
+```
+
+```{r}
+rab11_ctrl@meta.data$orig.ident <- case_when(
+  rab11_ctrl$orig.ident == "DS-00151" ~ "Control Replicate 1",
+  rab11_ctrl$orig.ident == "DS-00184"~ "Control Replicate 2",
+  rab11_ctrl$orig.ident == "DS-00152"~ "rab11 Replicate 1",
+  rab11_ctrl$orig.ident == "DS-00187"~ "rab11 Replicate 2",
+) %>% factor(., levels = c("Control Replicate 1", "Control Replicate 2",
+                           "rab11 Replicate 1","rab11 Replicate 2"))
+```
+
+```{r}
+rab11_ctrl_subset <- rab11_ctrl[,!is.na(rab11_ctrl$tmp_celltype)]
+```
+
+```{r}
+cnts <- rab11_ctrl_subset@meta.data %>% 
+  group_by(orig.ident, predicted.celltype) %>% 
+  # this counts cells per celltype
+  tally() %>% 
+  pivot_wider(., names_from = "orig.ident",
+              values_from = "n") %>% 
+  column_to_rownames("predicted.celltype") %>% 
+  as.matrix()
+
+# define model matrix
+exp_design <- rab11_ctrl_subset@meta.data[,c("orig.ident", "group_id")] %>%
+  data.frame() %>%
+  distinct()
+
+exp_design$orig.ident <- factor(exp_design$orig.ident, levels=c("Control Replicate 1", "Control Replicate 2",
+                           "rab11 Replicate 1","rab11 Replicate 2"))
+
+rownames(exp_design) <- exp_design$orig.ident
+
+model <- model.matrix(~ group_id, data = exp_design)
+
+
+dds <- DESeqDataSetFromMatrix(countData = cnts,
+                              colData = exp_design,
+                              design = ~group_id)
+
+# we dont use deseq2 to calculate norm factors because it assumes that majority of genes (in this case celltypes) dont change. 
+# This assumption doesnt hold in our case.
+
+sizeFactors(dds) = colSums(cnts)/mean(colSums(cnts))
+
+# run DESeq2. 
+result <- DESeq(dds, fitType='local') # only 4 "genes" so dont fit smooth trend line of dispersion ~ mean
+out_deseq <- results(result) %>% 
+  data.frame() %>% 
+  arrange(padj)
+out_deseq
+```
+
+```{r}
+plot_df  <- counts(dds, norm=T) %>% 
+  data.frame() %>% 
+  rownames_to_column("predicted.celltype") %>% 
+  pivot_longer(-predicted.celltype,names_to = "replicate", values_to = "n_cells") %>% 
+  mutate(celltype=factor(predicted.celltype, levels=c("EE","ISC/EB","EC"))) %>% 
+  mutate(replicate = str_replace_all(.$replicate,"\\."," ")) %>% 
+  mutate(replicate=factor(replicate, levels=c("Control Replicate 1","Control Replicate 2","rab11 Replicate 1","rab11 Replicate 2"))) %>%
+  mutate(Condition = ifelse(grepl("rab11",replicate), "rab11\nknockout","Control")) 
+plot_df
+```
+
+```{r}
+annotation_df <- data.frame(
+  celltype = c("EE","ISC/EB","EC"),
+  start = c("Control"), 
+  end = c("rab11\nknockout"),
+  y = c(400, 3000, 2500),
+  label = c("n.s.", "n.s.", "n.s.")
+)
+annotation_df$celltype <- factor(annotation_df$celltype , levels=c("EE","ISC/EB","EC"))
+```
+
+```{r}
+p <- ggplot(plot_df, aes(x=Condition, y=n_cells,color=replicate))+
+  geom_point(size=1.5)+
+  geom_blank(mapping=aes(x=Condition, y=n_cells,color=replicate)) +
+  geom_signif(
+    data = annotation_df,
+    mapping=aes(xmin = start, xmax = end, annotations = label, y_position = y, tip_length=0),
+    textsize = 4.3, vjust = 0.0, 
+    manual = TRUE,
+    inherit.aes = FALSE
+  )+
+  stat_summary(fun="mean", geom="crossbar",
+                 mapping=aes(ymin=..y.., ymax=..y..), width=0.2,
+                 position=position_dodge(),show.legend = FALSE, color="red")+
+  facet_wrap(~celltype, scales = "free_y", ncol = 4) + 
+  ylab("Normalized\nnumber of cells")
+p
+```
+
