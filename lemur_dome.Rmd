@@ -1,0 +1,186 @@
+---
+title: "lemur"
+output: html_document
+date: "2024-02-23"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#devtools::install_github("const-ae/glmGamPoi")
+library(lemur)
+library(tidyverse)
+library(SingleCellExperiment)
+library(Seurat)
+```
+
+```{r}
+ctrl_rep1 <- readRDS(file = "/g/huber/users/philipp/decode/data/DS-00178/analysis/DS-00178_filtered_srt_log_annot.rds")
+ctrl_rep2 <- readRDS(file = "/g/huber/users/philipp/decode/data/DS-00184/analysis/DS-00184_filtered_srt_log_annot.rds")
+
+dome_rep1 <- readRDS(file = "/g/huber/users/philipp/decode/data/DS-0017A/analysis/DS-0017A_filtered_srt_log_annot.rds")
+dome_rep2 <- readRDS(file = "/g/huber/users/philipp/decode/data/DS-00186/analysis/DS-00186_filtered_srt_log_annot.rds")
+```
+
+```{r}
+# combining controls
+ctrl_combined <- merge(ctrl_rep1$srt, y=ctrl_rep2$srt, add.cell.ids = c("ctrl_1", "ctrl_2"))
+
+# combining "treatment"
+dome_combined <- merge(dome_rep1$srt, y=dome_rep2$srt, add.cell.ids = c("dome_1","dome_2"))
+
+# combine all
+dome_ctrl <- merge(ctrl_combined, y=dome_combined)
+dome_ctrl@meta.data$sample_id <- factor(dome_ctrl@meta.data$orig.ident)
+dome_ctrl@meta.data$group_id <- case_when(
+  dome_ctrl@meta.data$sample_id %in% c("DS-00178", "DS-00184") ~ "ctrl",
+  dome_ctrl@meta.data$sample_id %in% c("DS-0017A", "DS-00186") ~ "dome",
+                                      ) 
+dome_ctrl$group_id <- factor(dome_ctrl$group_id)
+saveRDS(dome_ctrl, file="/g/huber/users/lazoriak/scripts/dome/dome analysis/dome_ctrl.rds")
+```
+
+```{r}
+# convert seurat obj to sce_lemur
+sce_lemur <- as.SingleCellExperiment(dome_ctrl)#, assay="RNA")
+
+rowData(sce_lemur) <- rownames(dome_ctrl)
+# preprocess / lognorm transform the data
+sce_lemur <- scater::logNormCounts(sce_lemur)
+hvg <- order(MatrixGenerics::rowVars(logcounts(sce_lemur)), decreasing = TRUE)
+#sce_lemur <- sce_lemur[hvg[1:10000], ]
+sce_lemur <- scater::runPCA(sce_lemur, ncomponents = 50)
+sce_lemur <- scater::runUMAP(sce_lemur, dimred = "PCA")
+saveRDS(sce_lemur, file="/g/huber/users/lazoriak/scripts/dome/dome analysis/sce_lemur.rds")
+```
+
+```{r}
+orig_umap <- uwot::umap(as.matrix(t(logcounts(sce_lemur))))
+
+as_tibble(colData(sce_lemur)) %>%
+  mutate(umap = orig_umap) %>%
+  ggplot(aes(x = umap[,1], y = umap[,2])) +
+    geom_point(aes(color = orig.ident, shape = group_id), size = 0.5) +
+    labs(title = "UMAP of logcounts")
+```
+
+```{r}
+fit <- lemur::lemur(sce_lemur, design = ~ group_id, n_embedding = 30, verbose = FALSE)
+fit
+
+fit <- align_harmony(fit)
+
+umap <- uwot::umap(t(fit$embedding))
+
+as_tibble(fit$colData) %>%
+  mutate(umap = umap) %>%
+  ggplot(aes(x = umap[,1], y = umap[,2])) +
+    geom_point(aes(color = predicted.celltype), size = 0.5) +
+    #facet_wrap(vars(group_id)) +
+    labs(title = "UMAP of latent space from LEMUR")
+```
+
+```{r}
+fit <- lemur::test_de(fit, contrast = cond(group_id = "dome") - cond(group_id = "ctrl"))
+saveRDS(fit, file="/g/huber/users/lazoriak/scripts/dome/dome analysis/fit.rds")
+```
+
+```{r, evaluate = FALSE}
+neighborhoods <- find_de_neighborhoods(fit, group_by = vars(orig.ident, group_id))
+
+as_tibble(neighborhoods) %>%
+  left_join(as_tibble(rowData(fit)[, 1:2]), by = c("name" = "rownames")) %>%
+  relocate(symbol, .before = "name") %>%
+  arrange(pval) %>%
+  dplyr::select(symbol, neighborhood, name, n_cells, pval, adj_pval)#, lfc, did_lfc) 
+```
+
+```{r}
+neighborhoods <- find_de_neighborhoods(fit, group_by = vars(orig.ident, group_id))
+saveRDS(neighborhoods, file="/g/huber/users/lazoriak/scripts/dome/dome analysis/neighborhoods.rds")
+neighborhoods <- bind_rows(
+  neighborhoods,
+  as_tibble(rowData(fit))
+)
+
+neighborhoods_top_10 <- as_tibble(neighborhoods) %>%
+  arrange(pval) %>%
+  dplyr::select(neighborhood, name, n_cells, pval, adj_pval, lfc)
+
+neighborhoods_top_10
+```
+
+```{r}
+neighborhoods_top_10 [1:10, ]%>%
+  drop_na() %>%
+  ggplot(aes(x = lfc, y = -log10(pval))) +
+    geom_point(aes(color  = adj_pval < 0.1)) +
+  ggrepel::geom_text_repel(aes(x = lfc, y = -log10(pval), label = name),
+                           size = 3, show.legend = FALSE,
+                           max.overlaps = Inf)  +
+    labs(title = "Volcano plot of the neighborhoods")
+```
+
+```{r}
+neighborhoods %>%
+  drop_na() %>%
+  ggplot(aes(x = lfc, y = -log10(pval))) +
+    geom_point(aes(color  = adj_pval < 0.1)) +
+    labs(title = "Volcano plot of the neighborhoods")
+```
+
+```{r}
+sel_gene="LysD"
+neighborhood_coordinates <- neighborhoods %>%
+  dplyr::filter(name == sel_gene) %>%
+  unnest(c(neighborhood)) %>%
+  dplyr::rename(cell_id = neighborhood) %>%
+  left_join(tibble(cell_id = rownames(umap), umap), by = "cell_id") %>%
+  dplyr::select(name, cell_id, umap)
+
+plot1 <- tibble(umap = umap) %>%
+  mutate(de = assay(fit, "DE")[sel_gene,]) %>%
+  ggplot(aes(x = umap[,1], y = umap[,2])) +
+    geom_point(aes(color = de)) +
+    scale_color_gradient2() +
+    geom_density2d(data = neighborhood_coordinates, breaks = 0.5, 
+                   contour_var = "ndensity", color = "black") +
+    labs(title = "LysD") +
+  xlab(label="UMAP") +
+  ylab(label="") +
+    guides(x = axis, y = axis) +
+    theme_void() +
+    theme(plot.title = element_text(hjust = 0.5),
+          axis.line = element_line(arrow = arrow(type = "closed", length = unit(0.1, "inches"))),
+          #axis.line = element_line(arrow = arrow(type = "closed", length = unit(0.1, "inches"), ends = "last")),
+          axis.title.x = element_text(hjust = 0),
+          axis.title.y = element_text(hjust = 1, angle = 270))
+plot1
+
+ggsave("LysD.png", plot1, width = 8, height = 6, units = "in")
+
+sel_gene <- "mwh"
+plot2 <- tibble(umap = umap) %>%
+  mutate(de = assay(fit, "DE")[sel_gene,]) %>%
+  ggplot(aes(x = umap[,1], y = umap[,2])) +
+    geom_point(aes(color = de)) +
+    scale_color_gradient2() +
+    geom_density2d(data = neighborhood_coordinates, breaks = 0.5, 
+                   contour_var = "ndensity", color = "black") +
+    labs(title = "mwh") +
+  xlab(label="UMAP") +
+  ylab(label="") +
+    guides(x = axis, y = axis) +
+    theme_void() +
+    theme(plot.title = element_text(hjust = 0.5),
+          #axis.line = element_line(arrow = arrow(type = "closed", length = unit(0.1, "inches"))),
+          axis.line = element_line(arrow = arrow(type = "closed", length = unit(0.1, "inches"), ends = "last")),
+          axis.title.x = element_text(hjust = 0),
+          axis.title.y = element_text(hjust = 1, angle = 270))
+plot2
+ggsave("mwh.png", plot2, width = 8, height = 6, units = "in")
+```
